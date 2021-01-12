@@ -73,6 +73,11 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
                     'label' => 'Transaction Charge (%)',
                 ),
                 ),
+                'auto_process_invoice' => array('radio', array(
+                    'label' => 'Process invoice after payment',
+                    'multiOptions' => array('1'=>'Yes', '0'=>'No')
+                ),
+                )
             ),
         );
     }
@@ -192,8 +197,9 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
 
     public function processTransaction($api_admin, $id, $data, $gateway_id)
     {
-        if(!$this->isIpnValid($data))
-            return;
+        if(APPLICATION_ENV != 'testing' && !$this->isIpnValid($data)) {
+            throw new Payment_Exception('Paystack IPN is not valid');
+        }    
 
         $ipn = $this->_getIpnObject($data); // paystack returns post body in webhook
         
@@ -251,7 +257,25 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
             
             $api_admin->invoice_transaction_update($tx_data);
             
-            $this->verifyTransaction($api_admin, $id, $data);  
+            $this->verifyTransaction($api_admin, $id, $data); 
+
+            if ($this->config['auto_process_invoice']){
+                $client_id = $invoice['client']['id'];
+                if($ipn['payment_status'] == 'Completed') {
+                    $bd = array(
+                        'id'            =>  $client_id,
+                        'amount'        =>  $invoice['total'],
+                        'description'   =>  'Paystack transaction '.$reference,
+                        'type'          =>  'Paystack',
+                        'rel_id'        =>  $id,
+                    );
+                    
+                    $api_admin->client_balance_add_funds($bd);
+                    if($tx['invoice_id']) {
+                        $api_admin->invoice_pay_with_credits(array('id'=>$tx['invoice_id']));
+                    }
+                }
+            } 
           
         }
 

@@ -168,6 +168,7 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
                     callback: function(response){
                                 let message = 'Payment complete! Reference: ' + response.reference;
                                 alert(message);
+                                window.location = window.location.href.split('?')[0];
                                 }
                                 });
                                 handler.openIframe();
@@ -225,7 +226,7 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
             $amount = $ipn->data->amount * 1/100;
             $currency = $ipn->data->currency;
             $gateway_id = $ipn->data->metadata->bb_gateway_id;
-            $invoice_id = $ipn->data->metadata->bb_invoice_id;
+            $invoice_id = isset($tx['invoice_id']) ? $tx['invoice_id'] :  $ipn->data->metadata->bb_invoice_id;
 
             $invoice = $api_admin->invoice_get(array('id' => $invoice_id));
 
@@ -327,10 +328,11 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
         $reference = $ipnObj->data->reference;
 
         $response = $this->request("/verify/".$reference);
-        if(!$response) return false;
-        
+        if (!$response) {
+         return false;
+        }
+
         $obj = json_decode($response);
-        $status = "unknown";
         if (isset($obj->status) && $obj->status) {
             $d = array(
                 'id' => $id,
@@ -364,30 +366,11 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
 
     
 	/**
-	 * @param string $url
+	 * @param string $path
 	 */
-	private function request($path, $post_vars = array(), $pheaders = array())
+	private function request($path)
     {
-        $post_contents = array();
-        
-		if ($post_vars) {
-            if(is_array($post_vars)){
-                $post_contents = array_merge($auth_params, $post_vars);
-            }
-        }
-        
-		
         $secretKey = $this->getSecretKey();
-        
-        if (!empty($pheaders)) {
-			if (!is_array($pheaders)) {
-				$headers[count($headers)] = $pheaders;
-			} else {
-				$next = count($headers);
-				$count = count($pheaders);
-				for ($i = 0; $i < $count; $i++) { $headers[$next + $i] = $pheaders[$i]; }
-			}
-		}
 		    
         $url = self::ENDPOINT.$path;
 
@@ -407,7 +390,9 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
         ));
 
 		$data = curl_exec($ch);      
-		if (curl_errno($ch)) return false;
+		if (curl_errno($ch)) {
+            return false;
+        }
 		curl_close($ch);
 		return $data;
 	}
@@ -470,7 +455,6 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
          return false;
         }
         else {
-            //http_response_code(200);
             return true;
         }
     }

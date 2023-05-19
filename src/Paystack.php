@@ -1,13 +1,9 @@
 <?php
 /**
- * BoxBilling
- *
- * @copyright BoxBilling, Inc (http://www.boxbilling.com)
+ * 
+ * @author Samuel Apraku
  * @license   Apache-2.0
  *
- * Copyright BoxBilling, Inc
- * This source file is subject to the Apache-2.0 License that is bundled
- * with this source code in the file LICENSE
  */
 
 class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
@@ -119,7 +115,7 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
     public function getHtml($api_admin, $invoice_id, $subscription)
     {
         $invoice = $api_admin->invoice_get(array('id' => $invoice_id));
-        // Paystack requires amount to be in pesewas
+        // Paystack requires amount to be in pesewas/cents
         $amount = round($this->getAmountInDefaultCurrency($invoice["currency"], $invoice["total"]) * 100, 0, PHP_ROUND_HALF_UP); 
         
         $fee = 0.00;
@@ -168,7 +164,6 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
                     callback: function(response){
                                 let message = 'Payment complete! Reference: ' + response.reference;
                                 alert(message);
-                                window.location = window.location.href.split('?')[0];
                                 }
                                 });
                                 handler.openIframe();
@@ -200,89 +195,71 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
     {
         if(APPLICATION_ENV != 'testing' && !$this->isIpnValid($data)) {
             throw new Payment_Exception('Paystack IPN is not valid');
-        }    
+        }
 
         $ipn = $this->_getIpnObject($data); // paystack returns post body in webhook
-        
-        $tx = $api_admin->invoice_transaction_get(array('id' => $id));
-        
-        if($tx['status'] === Model_Transaction::STATUS_APPROVED && $tx['txn_status'] === self::TXN_SUCCESS ){
-            $d = array(
-                'id' => $id,
-                'status' => Model_Transaction::STATUS_PROCESSED,
-                'error' => '',
-                'error_code' => '',
-                'updated_at' => date('Y-m-d H:i:s'),
-            );
-            
-            $api_admin->invoice_transaction_update($d);
+        $tx = $api_admin->invoice_transaction_get(['id' => $id]);
+        $invoice_id = isset($tx['invoice_id']) ? $tx['invoice_id'] :  $ipn->data->metadata->bb_invoice_id;
+        if($tx['status'] === Model_Transaction::STATUS_PROCESSED)
+        {
             return;
         }
 
-        else{
-            
-        if($ipn->event === 'charge.success'){
-            $reference = $ipn->data->reference;
-            $amount = $ipn->data->amount * 1/100;
-            $currency = $ipn->data->currency;
-            $gateway_id = $ipn->data->metadata->bb_gateway_id;
-            $invoice_id = isset($tx['invoice_id']) ? $tx['invoice_id'] :  $ipn->data->metadata->bb_invoice_id;
+        $reference = $ipn->data->reference;
+        $amount = $ipn->data->amount * 1/100;
+        $currency = $ipn->data->currency;
 
-            $invoice = $api_admin->invoice_get(array('id' => $invoice_id));
+        $invoice = $api_admin->invoice_get(['id' => $invoice_id]);
+        $client_id = $invoice['client']['id'];
 
-            $this->di['logger']->info("Processing transaction from Paystack with id: " .$reference);
-            $tx_data = array('id' => $id);
-            if (!$tx['status']) {
-                $tx_data['status'] = Model_Transaction::STATUS_RECEIVED;
-            }
-            
-            if (!$tx['invoice_id']) {
-                $tx_data['invoice_id'] = $invoice_id;
-            }
-            
-            if (!$tx['amount']) {
-                $tx_data['amount'] = $amount;
-            }
-
-            if (!$tx['currency']) {
-                $tx_data['currency'] = $currency;
-            }
-            
-            if (!$tx['txn_id']) {
-                $tx_data['txn_id'] = $reference;
-            }
-
-            if (!$tx['type']) {
-                $tx_data['type'] = \Payment_Transaction::TXTYPE_PAYMENT;
-            }
-            
+        $tx_data = ['id' => $id];
+        if (!$tx['invoice_id']) {
+            $tx_data['invoice_id'] = $invoice_id;
             $api_admin->invoice_transaction_update($tx_data);
-            
-            $this->verifyTransaction($api_admin, $id, $data); 
-
-            if ($this->config['auto_process_invoice']){
-                $client_id = $invoice['client']['id'];
-                if($ipn['payment_status'] == 'Completed') {
-                    $bd = array(
-                        'id'            =>  $client_id,
-                        'amount'        =>  $invoice['total'],
-                        'description'   =>  'Paystack transaction '.$reference,
-                        'type'          =>  'Paystack',
-                        'rel_id'        =>  $id,
-                    );
-                    
-                    $api_admin->client_balance_add_funds($bd);
-                    if($tx['invoice_id']) {
-                        $api_admin->invoice_pay_with_credits(array('id'=>$tx['invoice_id']));
-                    }
-                }
-            } 
-          
         }
 
+        if($tx['status'] === Model_Transaction::STATUS_RECEIVED) {
+            $this->verifyTransaction($api_admin, $id, $data);
+        }
+
+        if (!$tx['amount']) {
+            $tx_data['amount'] = $amount;
+        }
+        if (!$tx['currency']) {
+            $tx_data['currency'] = $currency;
         }
         
-   
+        if (!$tx['txn_id']) {
+            $tx_data['txn_id'] = $reference;
+        }
+        if (!$tx['type']) {
+            $tx_data['type'] = \Payment_Transaction::TXTYPE_PAYMENT;
+        }
+
+        if($ipn->event === 'charge.success') {
+            $markAsPaid = $this->config['auto_process_invoice'] ?? false;
+
+            $this->di['logger']->info("Processing transaction from Paystack with id: " .$reference);
+            
+            if ($markAsPaid){
+                $this->di['logger']->info("Executing");
+                if($ipn->data->status === 'success') {
+                    $this->di['logger']->info("IPN success.");
+                    // Don't execute. let cron activate it
+                    $api_admin->invoice_mark_as_paid([
+                        'id'=> $invoice_id,
+                        'check_product_setup' => true
+                    ]);
+                }
+            } 
+        }
+
+        $invoice = $api_admin->invoice_get(['id' => $invoice_id]);
+
+        if ($invoice['status'] === \Model_Invoice::STATUS_PAID) {
+            $tx_data['status'] = Model_Transaction::STATUS_PROCESSED;
+        }
+        $api_admin->invoice_transaction_update($tx_data);
     }
 
     private function _getIpnObject($ipn){
@@ -306,7 +283,7 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
 
         $bindings = array(
             ':transaction_id' => $txn_id,
-            ':transaction_status' => $ipn['payment_status'],
+            ':transaction_status' => $ipn['data']['status'],
             ':transaction_type' => $ipn['txn_type'],
             ':transaction_amount' => $amount,
         );
@@ -323,54 +300,72 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
     public function verifyTransaction($api_admin, $id, $ipn)
     {       
         $ipnObj = $this->_getIpnObject($ipn);
-        if(!$this->_issuccessEvent($ipnObj)) return false;
+        if(!$this->_issuccessEvent($ipnObj)) {
+            return false;
+        }
 
         $reference = $ipnObj->data->reference;
 
         $response = $this->request("/verify/".$reference);
-        if (!$response) {
-         return false;
-        }
+        if(!$response) return false;
 
         $obj = json_decode($response);
+        $status = "unknown";
         if (isset($obj->status) && $obj->status) {
-            $d = array(
+            $txn = $api_admin->invoice_transaction_get(['id' => $id]);
+            $status = Model_Transaction::STATUS_APPROVED;
+            if ($txn['status'] === Model_Transaction::STATUS_PROCESSED ) {
+                $status = Model_Transaction::STATUS_PROCESSED;
+            }
+            $d = [
                 'id' => $id,
-                'status' => Model_Transaction::STATUS_APPROVED,
+                'status' => $status,
                 'txn_status' => $obj->data->status,
                 'note' => $obj->message,
                 'output' => $obj->data,
                 'error' => '',
-                'error_code' => '',
-                'updated_at' => date('Y-m-d H:i:s'),
-            );
-            $api_admin->invoice_transaction_update($d);
+                'error_code' => null,
+            ];
+            
         } else {
-
-            $d = array(
+            $d = [
                 'id' => $id,
                 'status' => Model_Transaction::STATUS_RECEIVED,
                 'error' => $obj->message,
-                'error_code' => '',
-                'txn_status' => "",
-                'updated_at' => date('Y-m-d H:i:s'),
-            );
-
-            $api_admin->invoice_transaction_update($d);
-
+            	'error_code' => null,
+                'txn_status' => $status,
+            ];
         }
-
+        $d['updated_at'] = date('Y-m-d H:i:s');
+        $api_admin->invoice_transaction_update($d);
         return $obj->status;
 
     }
 
-    
 	/**
-	 * @param string $path
+	 * @param string $url
 	 */
-	private function request($path)
+	private function request($path, $post_vars = array(), $pheaders = array())
     {
+        $post_contents = array();
+        
+		if ($post_vars) {
+            if(is_array($post_vars)){
+                $post_contents = array_merge($auth_params, $post_vars);
+            }
+        }
+
         $secretKey = $this->getSecretKey();
+        
+        if (!empty($pheaders)) {
+			if (!is_array($pheaders)) {
+				$headers[count($headers)] = $pheaders;
+			} else {
+				$next = count($headers);
+				$count = count($pheaders);
+				for ($i = 0; $i < $count; $i++) { $headers[$next + $i] = $pheaders[$i]; }
+			}
+		}
 		    
         $url = self::ENDPOINT.$path;
 
@@ -390,9 +385,7 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
         ));
 
 		$data = curl_exec($ch);      
-		if (curl_errno($ch)) {
-            return false;
-        }
+		if (curl_errno($ch)) return false;
 		curl_close($ch);
 		return $data;
 	}
@@ -429,7 +422,6 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
 
     protected function getAmountInDefaultCurrency($currency, $amount)
     {
-
         $currencyService = $this->di['mod_service']('currency');
         return $currencyService->toBaseCurrency($currency, $amount);
 
@@ -451,13 +443,9 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
         define('PAYSTACK_SECRET_KEY', $this->getSecretKey());
         
        // validate event do all at once to avoid timing attack
-       if($server['HTTP_X_PAYSTACK_SIGNATURE'] !== hash_hmac('sha512', $input, PAYSTACK_SECRET_KEY)){
-         return false;
+       if(isset($server['HTTP_X_PAYSTACK_SIGNATURE']) ){
+            return $server['HTTP_X_PAYSTACK_SIGNATURE'] === hash_hmac('sha512', $input, PAYSTACK_SECRET_KEY);
         }
-        else {
-            return true;
-        }
+        return false;
     }
-    
-   
 }

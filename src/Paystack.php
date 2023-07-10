@@ -50,8 +50,13 @@ class Payment_Adapter_Paystack implements \Box\InjectionAwareInterface
             'supports_one_time_payments' => true,
             'supports_subscriptions' => false,
             'description' => 'Enter your Paystack Secret Key to start accepting payments by Paystack.',
-            'description_client' => 'Fee: 2% (MoMo,Debit/Credit Cards)',
+            'description_client' => 'Fee: 2% (MoMo, Debit/Credit Cards)',
             'can_load_in_iframe' => true,
+	    'logo' => array(
+                'logo' => 'paystack.png',
+                'height' => '30px',
+                'width' => '65px',
+            ),
             'form' => array(
                 'live_public_key' => array('text', array(
                     'label' => 'Live Public Key',
